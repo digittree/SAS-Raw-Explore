@@ -1,0 +1,53 @@
+/* === Raw Data Library Definition: === */
+
+/* === Working Library Definition: === */
+
+/* === Basic Settings: === */
+
+%let rawlib =  ; 	/*<-- put your library name where your raw data located */
+%let outpath = ; 	/*<-- put your output folder path here */
+
+/* === Raw Data Contents === */
+
+ods html file = "&outpath.\Raw Data Contents.html";
+
+proc datasets lib = &rawlib. ;
+	contentss data = _all_ ;
+quit; run;
+
+ods html close;
+
+/* === Raw Data Unique ID Counts === */
+
+%let rawdatalist =  /*<-- put your raw data name list for checking below */
+aaa
+bbb
+;
+
+%let rawid = xxx ; /*<-- put your "patient id" variable name from the raw data set*/
+
+%macro count_uni_id_from_raw;
+
+ods html file = "&outpath.\Raw Data Unique ID Counts.html";
+
+proc sql;
+
+%let i = 0 ;
+
+%do %while(%qscan(&rawdatalist.,%eval(&i + 1)) ne ) ;
+
+  %let i = %eval(&i + 1);
+  %let rawdata = %scan(&rawdatalist.,&i.);
+  
+  select count(distinct &rawid.) as Uni_ID_Count_From_&rawdata.
+    from &rawlib..&rawdata. ;
+
+%end;
+
+quit;
+
+ods html close;
+
+%mend;
+
+%count_uni_id_from_raw;
