@@ -11,13 +11,15 @@
 */
 
 %macro pull_id_only(libin,dstin,libout,dstout,pid,oth_vars,where);
+
 proc freq data=&libin..&dstin(keep=&pid. &oth_vars.) noprint;
 table &pid. / out=&libout..&dstout(keep=&pid. count);
 &where. ;
 run;
 
-proc append base=&libout..only_ids_&src. data=&libout..&dstout. force ;
+proc append base=&libout..only_ids_&src. data=&libout..&dstout. force ; *<-- this is designed for dat with multiple years, which is the most common situation;
 quit; run;
+
 %mend;
 
 /* === if multiple years included, can use below macro loop === */
@@ -28,10 +30,16 @@ delete only_ids_&src. ;
 quit;run;
 */
 
-%macro run_pull_id_only(startyear,endyear);
+%macro run_pull_id_only(startyear,endyear,libin,dstin,libout,dstout,pid,oth_vars,where);
+
 %do year=&startyear. %to &endyear. ;
-%pull_id_only(libin,dstin_1,libout,dstout_1,pid,oth_vars,where);
-%pull_id_only(libin,dstin_2,libout,dstout_2,pid,oth_vars,where);
+
+%pull_id_only(&libin.,&dstin.,&libout.,&dstout.,&src.,&pid.,&oth_vars.,&where.);
+
 %end;
+
 %mend;
-%run_pull_id_only(startyear,endyear);
+
+%run_pull_id_only(2010,2014,libin,dx_ip_&year.,libout,source_ip_ids_&year.,source,patid, , );
+*^-- note that "dx_ip_&year." can use the a macro like "&year." to indicate the in/out data name and will be translated with %do loops;
+
