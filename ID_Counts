@@ -1,6 +1,37 @@
 /* Count ALL IDs from multiple datasets: personaly, I feel using proc freq to generate a ID list is most efficient */
+/* Notes:
+    libin   = library that stores input data ;
+    dstin   = input datasets ;
+    libout  = library that stores output data ;
+    dstout  = output datasets ;
+    pid     = unique personal ids ;
+    oth_vars= other variables if needed, like when extra definition in 'where' conditions ;
+    where   = the extra conditions if needed to refine the data range ;
+    src     = data source indicator as needed, like one data came from medicare, and another came from medicaid, etc.
+*/
 
-proc freq data=&libin..&dstin(keep=&pid. &keep_var.) noprint;
+%macro pull_id_only(libin,dstin,libout,dstout,pid,oth_vars,where);
+proc freq data=&libin..&dstin(keep=&pid. &oth_vars.) noprint;
 table &pid. / out=&libout..&dstout(keep=&pid. count);
+&where. ;
 run;
 
+proc append base=&libout..only_ids_&src. data=&libout..&dstout. force ;
+quit; run;
+%mend;
+
+/* === if multiple years included, can use below macro loop === */
+
+/*
+proc datasets lib=&libout. nolist; *<--this is used for preventing append testing data multiple times as needed ;
+delete only_ids_&src. ;
+quit;run;
+*/
+
+%macro run_pull_id_only(startyear,endyear);
+%do year=&startyear. %to &endyear. ;
+%pull_id_only(libin,dstin_1,libout,dstout_1,pid,oth_vars,where);
+%pull_id_only(libin,dstin_2,libout,dstout_2,pid,oth_vars,where);
+%end;
+%mend;
+%run_pull_id_only(startyear,endyear);
