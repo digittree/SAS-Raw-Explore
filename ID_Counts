@@ -1,0 +1,6 @@
+/* Count ALL IDs from multiple datasets: personaly, I feel using proc freq to generate a ID list is most efficient */
+
+proc freq data=&libin..&dstin(keep=&pid. &keep_var.) noprint;
+table &pid. / out=&libout..&dstout(keep=&pid. count);
+run;
+
