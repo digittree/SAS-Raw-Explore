@@ -1,0 +1,393 @@
+/* ============== Import JSON Data =============== */
+
+%macro import_json_raw(filepath,filein,dstout);
+data &dstout.;
+      length line $200;
+      infile "&filepath.\&filein." lrecl=200 missover;
+      input;
+      line=compress(_infile_,' ,"');
+      if line='' then delete;
+run;
+%mend;
+%import_json_raw(S:\SYang\FitBit\Raw Data\messageFormatsgz\messageFormats, rawSleep.json, line_sleeps);
+
+/* ============== PULL EACH NEEDED VARIABLES FROM THE RAW DATA =============
+    The tricky part is need to know the 'order' of pulled var and other key vars, meaning who come first will affect how well finished 
+    of the results. So there is a 'later_var' macro variable set for tuning.
+    Macro Variable description listed below:
+    dstin: dataset in;
+    dstout: dataset out;
+    rslt_empty: which sign is showing the results are empty, like "sleep:[]" found in raw data may show that no sleeping record captured;
+    start_opt:  which is an optional sign for the start of meaningful contents, like "awakeCount:" string in sleeping data is the first
+                string line of a bounch of meaning full information. This sometimes will help targeting the start of a paragraph.
+    later_var:  this assigns which variable appears later in all involved variables in current run of the macro. eg. the "logID' appears
+                later than "awakeCount", but earlier than "totalTimeInBed", so when pulling "awakeCount" we need use "logID" as the later
+                variable, while pulling "totalTimeInBed", we should use "totalTimeInBed" as later variable. Since this will define the sort
+                order of the data when keep the first observation, so this setting will affect how clean of the final data or whether 
+                duplicate of one record will still exsit in final data.
+    result_date:  this is a common result data of the raw data. usually indicating the result collection date, not specific content 
+                  collection date, like "sleeping date". it's "date" in my raw data.
+    rslt_dat_str: the text string which we used for searching the result_date info. like "date:" is the actual text string appear right 
+                  before a result date result is recorded.
+    datFmt:       this defines how raw date was formated, like if raw date was written as "yyyy-mm-dd" then the format should be recognized
+                  as 'yymmdd10.', then format it again later according to your needs, like mmddyy10. 
+    activity_date:  this defines the date of a particular activity that fitbit recorded. eg. "dateOfSleep";
+    act_dat_str:    this defines the text string for searching. eg. "dateOfSleep:" is the real string right before the sleep date in raw
+                    data.
+    activity_id:    this defines the potential ID # for an activity, like the "logID" is actually the person-sleep level ID.
+    activity_id_str:  this defines the text string for searching the activity_id.
+    oth_var:      other interested variables needed beside the key vars listed above. it's the variable we want to pull each time and
+                  merge/link in next step.
+    oth_var_str:  the text string for searching the other interested variables, like "timeInBed", etc.
+    oth_var_rule: this is define how to convert the raw variable values into final value & formats in the proc sql step.
+*/
+
+%macro pull_idat_var(dstin, 		dstout,	
+					rslt_empty,		start_opt,			later_var,
+					result_date,	rslt_dat_str,		datFmt,
+					activity_date,	act_dat_str,	
+					activity_id,	activity_id_str,
+					oth_var,		oth_var_str,		oth_var_rule
+					) ;
+data &dstout._&oth_var.;
+	set line_&dstin.;
+length timeStamp &result_date. &activity_date. 4  &activity_id. &oth_var. $200 ;
+retain timeStamp &result_date. &activity_date. &activity_id. &oth_var. ;
+
+if index(line,"timeStamp:")>0 then do;
+	timeStamp	= substr(line,index(line,"timeStamp:") + length("timeStamp:"));
+end;
+
+if index(line,"result:")>0 then do;
+	&result_date.	= . ;
+	&activity_date.	= . ;
+	&activity_id.	= '' ;
+	&oth_var.		= '' ;
+end;
+
+if index(line,&rslt_empty.)>0 or index(line,&start_opt.)>0 then do;
+	&activity_date.	= . ;
+	&activity_id.	= '' ;
+	&oth_var.		= '' ;
+end;
+
+if index(line,&rslt_dat_str.)>0 then do; /*<--do the result date first, it is the order of data flows, 
+											and the rest are in the order when they appear in raw data;*/
+	&result_date. = input(strip(substr(line,index(line,&rslt_dat_str.)+length(&rslt_dat_str.))),&datFmt.); 
+end;
+
+if index(line,&act_dat_str.)>0 then do; 
+	&activity_date. = input(strip(substr(line,index(line,&act_dat_str.)+length(&act_dat_str.))),&datFmt.); 
+end;
+
+if index(line,&oth_var_str.)>0 then do; /*<-- the other var info come before logID, so input them before logID;*/
+	&oth_var. = substr(line,index(line,&oth_var_str.)+length(&oth_var_str.));
+end;
+
+if index(line,&activity_id_str.)>0 then do;
+	&activity_id.	= substr(line,index(line,&activity_id_str.)+length(&activity_id_str.));
+end;
+
+format &result_date. &activity_date. mmddyy10.;
+
+if &result_date.^=.;
+
+run;
+
+proc sort data=&dstout._&oth_var. nodupkey 
+		  out=&dstout._&oth_var._(keep=timeStamp &result_date. &activity_date. &activity_id. &oth_var.); 
+by timeStamp &result_date. descending &activity_date. descending &activity_id. descending &oth_var.;
+run;
+
+data &dstout._&oth_var._o;
+set &dstout._&oth_var._;
+by timeStamp &result_date. descending &activity_date. descending &activity_id. descending &oth_var.;
+if first.&result_date. then first=1;
+if put(&later_var.,$200.)^='' or first=1 and &result_date.^=. ;
+run;
+
+proc sql;
+create table &dstout._cl_&oth_var. as
+select distinct timeStamp, &result_date., &activity_date., &activity_id., &oth_var_rule. 
+from &dstout._&oth_var._o
+where not missing(&result_date.) 
+order by timeStamp, &result_date., &activity_date., &activity_id. ;
+quit;
+%mend;
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			list,			"logId:",		logID
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			awakeCount,	"awakeCount:",	input(awakeCount,best8.) as awakeCount
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			awakeDur,	"awakeDuration:",	input(awakeDur,best8.) as awakeDuration
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			awakinCnt,	"awakeningsCount:",	input(awakinCnt,best8.) as awakeningsCount
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			duration,	"duration:",	input(strip(duration),best12.) as duration
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			efficiency,	"efficiency:",	input(strip(efficiency),best8.) as efficiency
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	logID,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			mainSleep,	"MainSleep:",	strip(mainSleep) as mainSleep
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	minAftWakup,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			minAftWakup,	"minutesAfterWakeup:",	input(strip(minAftWakup),best8.) as minutesAfterWakeup
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	minAsleep,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			minAsleep,	"minutesAsleep:",	input(strip(minAsleep),best8.) as minutesAsleep
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	minAwake,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			minAwake,	"minutesAwake:",	input(strip(minAwake),best8.) as minutesAwake
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	minFalAslep,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			minFalAslep,	"minutesToFallAsleep:",	input(strip(minfalaslep),best8.) as minutesToFallAsleep
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	restlessCnt,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			restlessCnt,	"restlessCount:",	input(strip(restlesscnt),best8.) as restlessCount
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	restlessDur,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			restlessDur,	"restlessDuration:",	input(strip(restlessDur),best8.) as restlessDuration
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	startTime,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			startTime,		"startTime:",	strip(startTime) as startTime
+			);
+
+%pull_idat_var(sleeps,		sleep_logid,
+			"sleep:[]",		"awakeCount:",	timeInBed,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			timeInBed,		"timeInBed:",	input(strip(timeinbed),best8.) as timeInBed
+			);
+
+* --- below are pulling summary info --- ;
+
+%pull_idat_var(sleeps,		sleep_tot,
+			"sleep:[]",		"awakeCount:",	totMinAslep,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"summary:{",
+			totMinAslep,	"totalMinutesAsleep:",	input(strip(totMinAslep),best8.) as totalMinutesAsleep
+			);
+
+%pull_idat_var(sleeps,		sleep_tot,
+			"sleep:[]",		"awakeCount:",	totSlepRec,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"summary:{",
+			totSlepRec,		"totalSleepRecords:",	input(strip(totSlepRec),best8.) as totalSleepRecords
+			);
+
+%pull_idat_var(sleeps,		sleep_tot,
+			"sleep:[]",		"awakeCount:",	totTimInBed,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"summary:{",
+			totTimInBed,	"totalTimeInBed:",	input(strip(totTimInBed),best8.) as totalTimeInBed
+			);
+
+/* =============== MERGE STEM VARIABLES PULLED FROM ABOVE STEPS ================== */
+
+%macro merge_stems(dstin, result_date, activity_date, activity_id);
+data &dstin._mer_logid_stems;
+merge &dstin._logid_cl_: ;
+by timestamp &result_date. &activity_date. &activity_id.;
+run;
+
+data &dstin._mer_sums_stems;
+merge &dstin._mer_logid_stems
+	  &dstin._tot_cl:(drop=&activity_id.) ;
+by timestamp &result_date. &activity_date. ;
+run;
+%mend;
+%merge_stems(sleep, date, dateOfSleep, logID);
+
+/* =============== PULL THE MINUTE DATA IF IT HAS =================== 
+  Variable description listed below:(some are the same as above, only list the new vars:
+  minu_var1:  this defines the 1st variable should involved in minute data. usually is the date or time to give the order of minute data
+              it's not necessary the #1 important variables.
+  minu_var1_str:  this defines the text string to search the minu_var1 variable.
+  minu_var1_rule: this defines further cleaning rules of minu_var1 variable.
+  minu_var2/_str/_rule: meanings are similary as above, and if needed, var3/4/5 can also be added.
+*/
+
+%macro pull_minu_vars(dstin, 		dstout,	
+					rslt_empty,		start_opt,			later_var,
+					result_date,	rslt_dat_str,		datFmt,
+					activity_date,	act_dat_str,	
+					activity_id,	activity_id_str,
+					minu_var1,		minu_var1_str,		minu_var1_rule,
+					minu_var2,		minu_var2_str,		minu_var2_rule,
+					) ;
+data &dstout._minu_vars;
+	set line_&dstin.;
+length timeStamp &result_date. &activity_date. in_order 4  &activity_id. &minu_var1. &minu_var2. $200 ;
+retain timeStamp &result_date. &activity_date. &activity_id. &minu_var1. in_order;
+
+if index(line,"timeStamp:")>0 then do;
+	timeStamp	= substr(line,index(line,"timeStamp:") + length("timeStamp:"));
+end;
+
+if index(line,"result:")>0 then do;
+	&result_date.	= . ;
+	&activity_date.	= . ;
+	&activity_id.	= '' ;
+	&minu_var1.		= '' ;
+	&minu_var2.		= '' ;
+	in_order		= 0 ;
+end;
+
+if index(line,&rslt_empty.)>0 or index(line,&start_opt.)>0 then do;
+	&activity_date.	= . ;
+	&activity_id.	= '' ;
+	&minu_var1.		= '' ;
+	&minu_var2.		= '' ;
+	in_order		= 0 ;
+end;
+
+if index(line,&rslt_dat_str.)>0 then do; /*<--do the result date first, it is the order of data flows, 
+											and the rest are in the order when they appear in raw data;*/
+	&result_date. = input(strip(substr(line,index(line,&rslt_dat_str.)+length(&rslt_dat_str.))),&datFmt.); 
+end;
+
+if index(line,&act_dat_str.)>0 then do; 
+	&activity_date. = input(strip(substr(line,index(line,&act_dat_str.)+length(&act_dat_str.))),&datFmt.); 
+end;
+
+if index(line,&minu_var1_str.)>0 then do; /*<-- the other var info come before logID, so input them before logID;*/
+	&minu_var1. = substr(line,index(line,&minu_var1_str.)+length(&minu_var1_str.));
+	in_order + 1 ;
+end;
+
+if index(line,&minu_var2_str.)>0 then do; 
+	&minu_var2. = substr(line,index(line,&minu_var2_str.)+length(&minu_var2_str.));
+end;
+
+if index(line,&activity_id_str.)>0 then do;
+	&activity_id.	= substr(line,index(line,&activity_id_str.)+length(&activity_id_str.));
+end;
+
+format &result_date. &activity_date. mmddyy10.;
+
+if &result_date.^=.;
+
+run;
+
+proc sort data=&dstout._minu_vars nodupkey 
+		  out=&dstout._minu_vars_(keep=timeStamp &result_date. &activity_date. &activity_id. in_order &minu_var1. &minu_var2.); 
+by timeStamp &result_date. descending &activity_date. descending &activity_id. in_order 
+	descending &minu_var1.  descending &minu_var2. ;
+run;
+
+data &dstout._minu_vars_o;
+set &dstout._minu_vars_;
+by timeStamp &result_date. descending &activity_date. descending &activity_id. in_order 
+	descending &minu_var1. descending &minu_var2. ;
+if first.&result_date. then first=1;
+if put(&later_var.,$200.)^='' or first=1 and &result_date.^=. ;
+run;
+
+proc sql;
+create table &dstout._cl_minu_vars as
+select distinct timeStamp, &result_date., &activity_date., &activity_id., in_order, &minu_var1_rule., &minu_var2_rule. 
+from &dstout._minu_vars_o
+where not missing(&result_date.) and in_order^=0
+order by timeStamp, &result_date., &activity_date., &activity_id., in_order, &minu_var1., &minu_var2. ;
+quit;
+
+%mend;
+%pull_minu_vars(sleeps,		sleep_minu,
+			"sleep:[]",		"awakeCount:",	sleepStatus,
+			date,			"date:", 		yymmdd10.,
+			dateOfSleep,	"dateOfSleep:",	
+			logID,			"logId:",
+			dateTime,		"dateTime:",	input(strip(dateTime),time8.) as dateTime format time8.,
+			sleepStatus,	"value:",		input(strip(sleepStatus),best8.) as sleepStatus
+			);
+
+/* ================ MERGE ALL STEMP & MINUTE INFO TOGETHER ================= */
+
+%macro merge_all(dstin, result_date, activity_date, activity_id);
+data &dstin._merge_all;
+merge &dstin._mer_sums_stems(in=a)
+	  &dstin._minu_cl_minu_vars(in=b);
+by timeStamp &result_date. &activity_date. &activity_id. ;
+*if b and not a ;
+run;
+%mend;
+%merge_all(sleep, date, dateOfSleep, logID);
+
